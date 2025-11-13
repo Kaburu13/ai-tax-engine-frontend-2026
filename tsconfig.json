@@ -1,22 +1,29 @@
+// tsconfig.json (add the "types" line)
 {
   "compilerOptions": {
     "target": "ES2020",
+    "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx",
     "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "strict": true,
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "baseUrl": "src",
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "types": ["vite/client", "node"],
+    "baseUrl": ".",
     "paths": {
-      "@api/*": ["api/*"],
-      "@components/*": ["components/*"],
-      "@pages/*": ["pages/*"],
-      "@styles/*": ["styles/*"]
-    }
+      "@/*": ["src/*"]
+    },
+  
   },
-  "include": ["src", "vite-env.d.ts"]
+  "include": ["src", "vite.config.ts", "tsconfig.node.json"]
 }

@@ -1,39 +1,38 @@
-import React from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
-import Ingest from "./pages/Ingest";
-import RunSummary from "./pages/RunSummary";
-import Compute from "./pages/Compute";
-import ExportPage from "./pages/Export";
-import Settings from "./pages/Settings";
-import Sidebar from "./components/Sidebar";
-import Topbar from "./components/Topbar";
-import "./styles/app.css"
+// src/App.tsx
+import { Routes, Route, Navigate } from 'react-router-dom'
+import "./App.css"
+import "./index.css"
+// ✅ import from your layout *folder* (you have a barrel index.ts there)
+import { PageLayout } from '@/components/layout'
+
+import HomePage from '@/pages/home_page'
+import UploadPage from '@/pages/upload_page'
+import DashboardPage from '@/pages/dashboard_page'
+import WorkbookDetailPage from '@/pages/workbook_detail_page'
+import ProcessingPage from '@/pages/processing_page'
+import ReportsPage from '@/pages/reports_page'
+import NotFoundPage from '@/pages/not_found_page'
 
 export default function App() {
-  return (
-    <div className="app">
-      <aside className="sidebar">
-        <h2 className="brand">Tax Engine</h2>
-        <nav className="nav">
-          <NavLink to="/" end>Upload / Ingest</NavLink>
-          <NavLink to="/summary">Run Summary</NavLink>
-          <NavLink to="/compute">Compute</NavLink>
-          <NavLink to="/export">Export</NavLink>
-          <NavLink to="/settings">Settings</NavLink>
-        </nav>
-        <Sidebar />
-      </aside>
+  const withLayout = (node: React.ReactNode) => (
+    <PageLayout>{node}</PageLayout>
+  )
 
-      <main className="main">
-        <Topbar />
-        <Routes>
-          <Route path="/" element={<Ingest />} />
-          <Route path="/summary" element={<RunSummary />} />
-          <Route path="/compute" element={<Compute />} />
-          <Route path="/export" element={<ExportPage />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </main>
-    </div>
-  );
+  return (
+    <Routes>
+      {/* Main pages wrapped with the shared layout */}
+      <Route path="/" element={withLayout(<HomePage />)} />
+       <Route path="/upload" element={withLayout(<UploadPage />)} /> 
+       <Route path="/dashboard" element={withLayout(<DashboardPage />)} /> 
+      <Route path="/processing" element={withLayout(<ProcessingPage />)} />
+      <Route path="/reports" element={withLayout(<ReportsPage />)} />
+       <Route path="/workbooks/:id" element={withLayout(<WorkbookDetailPage />)} />
+
+      {/* Back-compat (you had /workbook/:id) */}
+        <Route path="/workbook/:id" element={<Navigate to="/workbooks/:id" replace />} />
+
+      {/* 404 */}
+      <Route path="*" element={withLayout(<NotFoundPage />)} />
+    </Routes>
+  )
 }
