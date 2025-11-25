@@ -1,6 +1,6 @@
-// src/types/api.types.ts
 // Fetch-based API with named exports AND a default `api` object.
-// Compatible with old pages (api.utils.*) and new pages (named imports).
+// – Includes processing endpoints (workbook + per-sheet) and queue.
+// – Safe error handling (throws Error with status text).
 
 export const API_PREFIX = '/api/v1';
 
@@ -24,12 +24,12 @@ export interface Sheet {
   sheet_name: string;
   sheet_index: number;
   classification_type: string | null;
-  classification_confidence: number; // 0..1
+  classification_confidence: number;         // 0..100 expected from API
   classification_method: string | null;
-  classification_display: string;
-  confidence_percentage: number;     // 0..100 (derived in API/serializer)
+  classification_display: string;            // server-provided pretty label
+  confidence_percentage: number;            // optional compatibility field
   is_classified: boolean;
-  year_type: 'current' | 'prior' | 'unknown' | 'current_year' | 'prior_year' | null;
+  year_type: 'current'|'prior'|'unknown';
   detected_year: number | null;
   row_count: number;
   column_count: number;
@@ -48,16 +48,8 @@ export interface Workbook {
   file?: string;
   original_filename: string;
   file_size: number;
-  status:
-    | 'pending'
-    | 'uploading'
-    | 'uploaded'
-    | 'classifying'
-    | 'classified'
-    | 'processing'
-    | 'completed'
-    | 'failed';
-  mode: 'validation' | 'generation' | null;
+  status: 'pending'|'uploading'|'uploaded'|'classifying'|'classified'|'processing'|'completed'|'failed';
+  mode: 'validation'|'generation'|null;
   sheets_count: number;
   classified_sheets_count: number;
   current_tax_year: number | null;
@@ -67,7 +59,7 @@ export interface Workbook {
   error_message: string | null;
   processing_started_at: string | null;
   processing_completed_at: string | null;
-  processing_duration: number | null;
+  processing_duration: number | null;      // read-only; set by server
   is_processing: boolean;
   has_current_year_data?: boolean;
   has_prior_year_data?: boolean;
@@ -83,28 +75,11 @@ export interface Paged<T> {
   results: T[];
 }
 
-/** Dashboard/tiles */
-export interface WorkbookStats {
-  total_workbooks: number;
-  processing_workbooks: number;
-  completed_workbooks: number;
-  failed_workbooks: number;
-  total_sheets: number;
-  classified_sheets: number;
-  average_processing_time: number;
-  classification_breakdown: Record<string, number>;
-  status_breakdown: Record<string, number>;
-}
-
-/** Queue snapshot */
-export interface ProcessingQueue {
-  count: number;
-  workbooks: Array<{
-    id: UUID;
-    original_filename: string;
-    status: Workbook['status'];
-    created_at: string;
-  }>;
+export interface QueueItem {
+  id: UUID;
+  original_filename: string;
+  status: Workbook['status'];
+  created_at: string;
 }
 
 /* ───────── APIs ───────── */
@@ -115,22 +90,8 @@ export const workbookAPI = {
     fd.append('file', file);
     return http<Workbook>(`${API_PREFIX}/workbooks/upload/`, { method: 'POST', body: fd });
   },
-async process(id: UUID): Promise<{ success: boolean; workbook: Workbook }> {
-  return http<{ success: boolean; workbook: Workbook }>(
-    `${API_PREFIX}/workbooks/process/${id}/`,
-    { method: 'POST' }
-  );
-},
 
-  /** Non-paginated list when backend supports it */
-  async list(params: URLSearchParams = new URLSearchParams()): Promise<Workbook[]> {
-    const qs = params.toString();
-    return http<Workbook[]>(`${API_PREFIX}/workbooks/${qs ? `?${qs}` : ''}`);
-  },
-
-  async listPaginated(
-    params: URLSearchParams = new URLSearchParams()
-  ): Promise<Paged<Workbook>> {
+  async listPaginated(params: URLSearchParams = new URLSearchParams()): Promise<Paged<Workbook>> {
     const qs = params.toString();
     return http<Paged<Workbook>>(`${API_PREFIX}/workbooks/${qs ? `?${qs}` : ''}`);
   },
@@ -150,41 +111,26 @@ async process(id: UUID): Promise<{ success: boolean; workbook: Workbook }> {
     );
   },
 
-  async bulkDelete(workbook_ids: UUID[]): Promise<{ success: boolean; count: number }> {
-    return http<{ success: boolean; count: number }>(
-      `${API_PREFIX}/workbooks/bulk-delete/`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workbook_ids }),
-      }
-    );
+  /** Trigger processing for the whole workbook (backend: POST /process/) */
+  async process(id: UUID): Promise<{ started: boolean }> {
+    return http<{ started: boolean }>(`${API_PREFIX}/workbooks/${id}/process/`, { method: 'POST' });
   },
 
-  async getStats(): Promise<WorkbookStats> {
-    return http<WorkbookStats>(`${API_PREFIX}/workbooks/stats/`);
+  /** Processing queue snapshot (backend: GET /processing-queue/) */
+  async getProcessingQueue(): Promise<{ count: number; workbooks: QueueItem[] }> {
+    return http<{ count: number; workbooks: QueueItem[] }>(`${API_PREFIX}/workbooks/processing-queue/`);
   },
 
-  async getProcessingQueue(): Promise<ProcessingQueue> {
-    return http<ProcessingQueue>(`${API_PREFIX}/workbooks/processing-queue/`);
-  },
-
-  /** Blob download helper (if backend exposes /download/) */
-  async downloadBlob(id: UUID): Promise<Blob> {
-    const res = await fetch(`${API_PREFIX}/workbooks/${id}/download/`, {
-      method: 'GET',
-    });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.blob();
+  /** Dashboard stats (backend: GET /stats/) */
+  async getStats(): Promise<Record<string, any>> {
+    return http<Record<string, any>>(`${API_PREFIX}/workbooks/stats/`);
   },
 };
 
 export const sheetAPI = {
-  /** Always return plain Sheet[] (normalize both array and {results}) */
+  /** Normalize both array and {results: []} backends to Sheet[] */
   async getByWorkbook(workbookId: UUID): Promise<Sheet[]> {
-    const url = `${API_PREFIX}/workbooks/sheets/?${new URLSearchParams({
-      workbook: workbookId,
-    }).toString()}`;
+    const url = `${API_PREFIX}/workbooks/sheets/?${new URLSearchParams({ workbook: workbookId }).toString()}`;
     const res = await fetch(url);
     if (!res.ok) {
       let detail = '';
@@ -201,9 +147,7 @@ export const sheetAPI = {
 
   async patch(
     id: UUID,
-    body: Partial<
-      Pick<Sheet, 'classification_type' | 'classification_meta' | 'year_type' | 'detected_year'>
-    >
+    body: Partial<Pick<Sheet,'classification_type'|'classification_meta'|'year_type'|'detected_year'>>
   ): Promise<void> {
     const res = await fetch(`${API_PREFIX}/workbooks/sheets/${id}/`, {
       method: 'PATCH',
@@ -216,9 +160,14 @@ export const sheetAPI = {
       throw new Error(`${res.status} ${res.statusText}${detail ? ` – ${detail}` : ''}`);
     }
   },
+
+  /** Trigger processing for a single sheet (backend: POST /sheets/{id}/process/) */
+  async process(id: UUID): Promise<{ started: boolean }> {
+    return http<{ started: boolean }>(`${API_PREFIX}/workbooks/sheets/${id}/process/`, { method: 'POST' });
+  },
 };
 
-/* ───────── Utilities (named + default.utils for back-compat) ───────── */
+/* ───────── Utilities (named exports) ───────── */
 
 export function formatFileSize(bytes: number): string {
   if (!bytes) return '0 Bytes';
@@ -273,13 +222,6 @@ export function getStatusColor(status: string): string {
   return map[status] ?? 'gray';
 }
 
-export function getConfidenceColor(conf: number): string {
-  if (conf >= 80) return 'green';
-  if (conf >= 60) return 'yellow';
-  if (conf >= 40) return 'orange';
-  return 'red';
-}
-
 export function getClassificationLabel(classificationType: string | null): string {
   if (!classificationType) return 'Not Classified';
   const labels: Record<string, string> = {
@@ -307,7 +249,6 @@ const api = {
     formatDate,
     formatRelativeTime,
     getStatusColor,
-    getConfidenceColor,
     getClassificationLabel,
   },
 };
