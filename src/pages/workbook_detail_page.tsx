@@ -1,179 +1,256 @@
-import React from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+// src/pages/workbook_detail_page.tsx
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   workbookAPI,
+  processWorkbook,
   sheetAPI,
-  type Workbook,
+  CLASSIFICATION_OPTIONS,
   type Sheet,
-  getClassificationLabel,
-} from '@/types/api.types';
+  type Workbook,
+} from "../services/api";
 
-type Tab = 'all' | 'current' | 'prior' | 'unclassified';
+type TabKey = "all" | "current" | "prior" | "unclassified";
 
-export default function WorkbookDetailPage() {
+const WorkbookDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [workbook, setWorkbook] = React.useState<Workbook | null>(null);
-  const [sheets, setSheets] = React.useState<Sheet[]>([]);
-  const [tab, setTab] = React.useState<Tab>('all');
-  const [busy, setBusy] = React.useState(false);
+  const [wb, setWb] = useState<Workbook | null>(null);
+  const [sheets, setSheets] = useState<Sheet[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<TabKey>("all");
+  const [processing, setProcessing] = useState(false);
 
-  async function loadAll() {
+  const reload = useCallback(async () => {
     if (!id) return;
-    try {
-      setLoading(true);
-      const [wb, sh] = await Promise.all([workbookAPI.get(id), sheetAPI.getByWorkbook(id)]);
-      setWorkbook(wb);
-      setSheets(sh);
-      setError(null);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to load workbook');
-    } finally {
-      setLoading(false);
-    }
-  }
+    const [workbook, rawSheets] = await Promise.all([
+      workbookAPI.get(id),
+      workbookAPI.getSheets(id),
+    ]);
+    setWb(workbook);
+    setSheets(rawSheets);
+  }, [id]);
 
-  React.useEffect(() => { loadAll(); }, [id]);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!id) return;
+        await reload();
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [id, reload]);
 
-  function filteredSheets() {
+  // ——————— Tab bucketing with fallbacks ———————
+  const filtered = useMemo(() => {
+    if (!sheets || !wb) return [];
+
+    const cy = (wb as any).current_tax_year ?? null; // backend field name
+    const py = (wb as any).prior_tax_year ?? null;
+
+    const isCurrent = (s: Sheet) => {
+      const yt = (s.year_type || "unknown").toLowerCase();
+      if (yt === "current") return true;
+      if (s.detected_year != null && cy != null) return Number(s.detected_year) === Number(cy);
+      return false;
+    };
+
+    const isPrior = (s: Sheet) => {
+      const yt = (s.year_type || "unknown").toLowerCase();
+      if (yt === "prior") return true;
+      if (s.detected_year != null && py != null) return Number(s.detected_year) === Number(py);
+      return false;
+    };
+
     switch (tab) {
-      case 'current': return sheets.filter(s => s.year_type === 'current');
-      case 'prior': return sheets.filter(s => s.year_type === 'prior');
-      case 'unclassified': return sheets.filter(s => !s.classification_type);
-      default: return sheets;
+      case "current":
+        return sheets.filter(isCurrent);
+      case "prior":
+        return sheets.filter(isPrior);
+      case "unclassified":
+        return sheets.filter((s) => !s.classification_type);
+      default:
+        return sheets;
     }
-  }
+  }, [sheets, wb, tab]);
 
-  async function processWorkbook() {
+  // ——————— Process button ———————
+  const onProcessWorkbook = async () => {
     if (!id) return;
     try {
-      setBusy(true);
-      await workbookAPI.process(id);
-      await loadAll();
-    } catch (e: any) {
-      alert(e.message ?? 'Failed to start processing');
+      setProcessing(true);
+      const res = await processWorkbook(id); // your API returns { started, mode, status, result? }
+      // If we ran synchronously, take the user straight to Reports (they expect "a result").
+      if (res?.mode === "sync") {
+        // optional: force a refresh so status badges update when they come back
+        await reload();
+        navigate("/reports", {
+          state: {
+            fromProcessing: true,
+            workbookId: id,
+            report: res?.result?.report ?? null,
+          },
+        });
+      } else {
+        // async (Celery) – go to queue
+        navigate("/processing", { state: { queuedId: id } });
+      }
     } finally {
-      setBusy(false);
+      setProcessing(false);
     }
-  }
+  };
 
-  async function processOne(sheetId: string) {
-    try {
-      setBusy(true);
-      await sheetAPI.process(sheetId);
-      await loadAll();
-    } catch (e: any) {
-      alert(e.message ?? 'Failed to process sheet');
-    } finally {
-      setBusy(false);
-    }
-  }
+  if (loading) return <div className="p-6">Loading…</div>;
+  if (!wb) return <div className="p-6 text-red-600">Workbook not found.</div>;
+
+  const fileSize =
+    wb.file_size_bytes != null
+      ? `${(wb.file_size_bytes / 1024 / 1024).toFixed(2)} MB`
+      : "—";
 
   return (
-    <div className="container mx-auto max-w-6xl py-8">
-      <button className="text-sm text-blue-600 mb-4" onClick={() => navigate(-1)}>← Back</button>
+    <div className="p-6">
+      <div className="mb-4">
+        <button onClick={() => navigate(-1)} className="text-blue-600 hover:underline">
+          ← Back
+        </button>
+      </div>
 
-      {loading ? (
-        <div>Loading…</div>
-      ) : error ? (
-        <div className="rounded-md bg-red-50 text-red-700 px-3 py-2">{error}</div>
-      ) : !workbook ? null : (
-        <>
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-semibold">Workbook Details</h1>
-            <div className="flex items-center gap-3">
-              <span className="text-sm rounded px-2 py-1 border capitalize">{workbook.status}</span>
-              <button
-                onClick={processWorkbook}
-                disabled={busy || !['classified','failed','completed'].includes(workbook.status)}
-                className="rounded bg-blue-600 text-white px-3 py-2 text-sm disabled:opacity-50"
-                title="Start processing all sheets"
-              >
-                {busy ? 'Working…' : 'Process Workbook'}
-              </button>
-            </div>
-          </div>
+      <div className="flex items-center justify-between mb-3">
+        <h1 className="text-xl font-semibold">Workbook Details</h1>
+        <button
+          onClick={onProcessWorkbook}
+          disabled={processing || wb.status === "processing"}
+          className={`px-4 py-2 rounded text-white ${
+            processing || wb.status === "processing"
+              ? "bg-gray-400 cursor-not-allowed"
+              : "bg-blue-600 hover:bg-blue-700"
+          }`}
+        >
+          {processing || wb.status === "processing" ? "Processing…" : "Process Workbook"}
+        </button>
+      </div>
 
-          <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-3">
-            <InfoCard label="File size" value={`${(workbook.file_size/1024/1024).toFixed(2)} MB`} />
-            <InfoCard label="Sheets" value={`${workbook.sheets_count} (Classified: ${workbook.classified_sheets_count})`} />
-            <InfoCard label="Mode" value={workbook.mode ?? '—'} />
-            <InfoCard label="Timing" value={workbook.processing_started_at ? 'Tracked' : 'Not processed'} />
-          </div>
+      <div className="text-sm text-gray-600 mb-4 space-x-2">
+        <span>File size: {fileSize}</span>
+        <span>•</span>
+        <span>Sheets: {sheets.length}</span>
+        <span>•</span>
+        <span>Status: {wb.status ?? "—"}</span>
+      </div>
 
-          {/* Filters */}
-          <div className="flex gap-2 mt-6">
-            {(['all','current','prior','unclassified'] as Tab[]).map(t => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-3 py-1 rounded text-sm border ${tab===t ? 'bg-gray-900 text-white' : 'bg-white'}`}
-              >
-                {t[0].toUpperCase()+t.slice(1)}
-              </button>
-            ))}
-          </div>
+      {/* Tabs */}
+      <div className="mb-3 space-x-2">
+        {(["all", "current", "prior", "unclassified"] as TabKey[]).map((k) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`px-3 py-1 rounded border ${
+              tab === k ? "bg-blue-50 border-blue-300 text-blue-700" : "bg-white"
+            }`}
+          >
+            {k === "all" ? "All" : k[0].toUpperCase() + k.slice(1)}
+          </button>
+        ))}
+      </div>
 
-          {/* Sheets Table */}
-          <div className="mt-3 rounded-lg border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 text-left">
-                  <th className="px-4 py-2">Sheet</th>
-                  <th className="px-4 py-2">Year</th>
-                  <th className="px-4 py-2">Classification</th>
-                  <th className="px-4 py-2 w-48">Actions</th>
+      {/* Table */}
+      <div className="overflow-x-auto rounded border">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-3 py-2 text-left">Sheet</th>
+              <th className="px-3 py-2 text-left">Year</th>
+              <th className="px-3 py-2 text-left">Classification</th>
+              <th className="px-3 py-2 text-left">Confidence</th>
+              <th className="px-3 py-2 text-left">Status</th>
+              <th className="px-3 py-2 text-left">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((s) => {
+              const processed = (s as any).is_processed ? true : false;
+              const conf =
+                s.confidence_percentage != null
+                  ? `${s.confidence_percentage}%`
+                  : "—";
+              return (
+                <tr key={s.id} className="border-t">
+                  <td className="px-3 py-2">{s.sheet_name}</td>
+                  <td className="px-3 py-2">{s.detected_year ?? "—"}</td>
+                  <td className="px-3 py-2">
+                    {s.classification_display || s.classification_type || "Unclassified"}
+                  </td>
+                  <td className="px-3 py-2">{conf}</td>
+                  <td className="px-3 py-2">
+                    {processed ? (
+                      <span className="px-2 py-1 text-green-700 bg-green-100 rounded">processed</span>
+                    ) : (
+                      <span className="px-2 py-1 text-gray-700 bg-gray-100 rounded">pending</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <SheetClassifierDropdown sheet={s} onChanged={reload} />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filteredSheets().length === 0 ? (
-                  <tr><td className="px-4 py-6 text-gray-500" colSpan={4}>No sheets found.</td></tr>
-                ) : filteredSheets().map(s => (
-                  <tr key={s.id} className="border-t">
-                    <td className="px-4 py-2">{s.sheet_name}</td>
-                    <td className="px-4 py-2">{s.detected_year ?? (s.year_type==='current'?'Current':'—')}</td>
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded bg-gray-100 px-2 py-0.5">
-                          {getClassificationLabel(s.classification_type)}
-                        </span>
-                        {!!s.classification_confidence && (
-                          <span className="text-xs text-gray-500">
-                            {(s.classification_confidence).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <button
-                        className="rounded bg-blue-600 text-white px-3 py-1 mr-2 disabled:opacity-50"
-                        onClick={() => processOne(s.id)}
-                        disabled={busy || !s.classification_type}
-                        title={s.classification_type ? 'Process this sheet' : 'Classify first'}
-                      >
-                        Process
-                      </button>
-                      {/* optional: manual re-classify dropdown could live here */}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
+                  No sheets in this tab.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
-}
+};
 
-function InfoCard({ label, value }: { label: string; value: React.ReactNode }) {
+export default WorkbookDetailPage;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Small local component for reclassifying a sheet. After a change, we call
+   `onChanged()` to refetch data so tabs and pills update instantly.
+   ────────────────────────────────────────────────────────────────────────── */
+const SheetClassifierDropdown: React.FC<{
+  sheet: Sheet;
+  onChanged: () => Promise<void>;
+}> = ({ sheet, onChanged }) => {
+  const [saving, setSaving] = useState(false);
+  const [value, setValue] = useState<string>(sheet.classification_type ?? "unclassified");
+
+  const onChange = async (v: string) => {
+    setValue(v);
+    try {
+      setSaving(true);
+      await sheetAPI.patch((sheet as any).id, { classification_type: v });
+      await onChanged();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div className="rounded-lg border p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-base">{value}</div>
-    </div>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={saving}
+      className="border rounded px-2 py-1"
+    >
+      {CLASSIFICATION_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
-}
+};

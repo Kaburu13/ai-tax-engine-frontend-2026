@@ -5,13 +5,21 @@
 export const API_PREFIX = '/api/v1';
 
 async function http<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, init);
+  const res = await fetch(input, {
+    // credentials: 'include', // uncomment if you rely on Django CSRF/session cookies
+    ...init,
+  });
   if (!res.ok) {
     let detail = '';
     try { detail = JSON.stringify(await res.json()); } catch {}
     throw new Error(`${res.status} ${res.statusText}${detail ? ` – ${detail}` : ''}`);
   }
-  return res.json() as Promise<T>;
+  // Some endpoints may return 202 with empty body; guard that:
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return undefined as unknown as T;
+  }
 }
 
 /* ───────── Types ───────── */
@@ -27,7 +35,7 @@ export interface Sheet {
   classification_confidence: number;         // 0..100 expected from API
   classification_method: string | null;
   classification_display: string;            // server-provided pretty label
-  confidence_percentage: number;            // optional compatibility field
+  confidence_percentage: number;             // optional compatibility field
   is_classified: boolean;
   year_type: 'current'|'prior'|'unknown';
   detected_year: number | null;
@@ -91,13 +99,14 @@ export const workbookAPI = {
     return http<Workbook>(`${API_PREFIX}/workbooks/upload/`, { method: 'POST', body: fd });
   },
 
+  // IMPORTANT: only accept URLSearchParams to avoid `?[object Object]`
   async listPaginated(params: URLSearchParams = new URLSearchParams()): Promise<Paged<Workbook>> {
     const qs = params.toString();
     return http<Paged<Workbook>>(`${API_PREFIX}/workbooks/${qs ? `?${qs}` : ''}`);
   },
 
   async get(id: UUID): Promise<Workbook> {
-    return http<Workbook>(`${API_PREFIX}/workbooks/${id}/`);
+    return http<Workbook>(`${API_PREFIX}/workbooks/${id}/`)
   },
 
   async retry(id: UUID): Promise<Workbook> {
@@ -111,11 +120,18 @@ export const workbookAPI = {
     );
   },
 
-  /** Trigger processing for the whole workbook (backend: POST /process/) */
-  async process(id: UUID): Promise<{ started: boolean }> {
-    return http<{ started: boolean }>(`${API_PREFIX}/workbooks/${id}/process/`, { method: 'POST' });
-  },
+  /**
+   * Trigger processing for the whole workbook (backend: POST /process/)
+   * Handles both sync (200 with `{status,result}`) and async/accepted (202 with `{status}`).
+   */
 
+async process(id: UUID): Promise<{ status: 'processing'|'completed'|'failed'; result?: any }> {
+  return http<{ status: 'processing'|'completed'|'failed'; result?: any }>(
+    `${API_PREFIX}/workbooks/${id}/process/`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+  );
+}
+,
   /** Processing queue snapshot (backend: GET /processing-queue/) */
   async getProcessingQueue(): Promise<{ count: number; workbooks: QueueItem[] }> {
     return http<{ count: number; workbooks: QueueItem[] }>(`${API_PREFIX}/workbooks/processing-queue/`);
@@ -130,14 +146,8 @@ export const workbookAPI = {
 export const sheetAPI = {
   /** Normalize both array and {results: []} backends to Sheet[] */
   async getByWorkbook(workbookId: UUID): Promise<Sheet[]> {
-    const url = `${API_PREFIX}/workbooks/sheets/?${new URLSearchParams({ workbook: workbookId }).toString()}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      let detail = '';
-      try { detail = JSON.stringify(await res.json()); } catch {}
-      throw new Error(`${res.status} ${res.statusText}${detail ? ` – ${detail}` : ''}`);
-    }
-    const data = await res.json();
+    const url = `${API_PREFIX}/workbooks/sheets/?${new URLSearchParams({ workbook: workbookId })}`;
+    const data = await http<any>(url);
     return Array.isArray(data) ? data : (data?.results ?? []);
   },
 
@@ -149,21 +159,19 @@ export const sheetAPI = {
     id: UUID,
     body: Partial<Pick<Sheet,'classification_type'|'classification_meta'|'year_type'|'detected_year'>>
   ): Promise<void> {
-    const res = await fetch(`${API_PREFIX}/workbooks/sheets/${id}/`, {
+    await http<void>(`${API_PREFIX}/workbooks/sheets/${id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      let detail = '';
-      try { detail = JSON.stringify(await res.json()); } catch {}
-      throw new Error(`${res.status} ${res.statusText}${detail ? ` – ${detail}` : ''}`);
-    }
   },
 
   /** Trigger processing for a single sheet (backend: POST /sheets/{id}/process/) */
-  async process(id: UUID): Promise<{ started: boolean }> {
-    return http<{ started: boolean }>(`${API_PREFIX}/workbooks/sheets/${id}/process/`, { method: 'POST' });
+  async process(id: UUID): Promise<{ status: 'processing'|'completed'|'failed'; result?: any }> {
+    return http<{ status: 'processing'|'completed'|'failed'; result?: any }>(
+      `${API_PREFIX}/workbooks/sheets/${id}/process/`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    );
   },
 };
 

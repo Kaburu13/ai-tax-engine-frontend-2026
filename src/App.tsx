@@ -28,9 +28,6 @@ export default function App() {
       <Route path="/reports" element={withLayout(<ReportsPage />)} />
        <Route path="/workbooks/:id" element={withLayout(<WorkbookDetailPage />)} />
 
-      {/* Back-compat (you had /workbook/:id) */}
-        <Route path="/workbook/:id" element={<Navigate to="/workbooks/:id" replace />} />
-
       {/* 404 */}
       <Route path="*" element={withLayout(<NotFoundPage />)} />
     </Routes>

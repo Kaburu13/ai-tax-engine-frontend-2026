@@ -1,70 +1,88 @@
-import React from 'react';
-import { workbookAPI, formatRelativeTime } from '@/types/api.types';
+import React, { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import api from "../services/api";
 
-export default function ProcessingPage() {
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [count, setCount] = React.useState(0);
-  const [items, setItems] = React.useState<
-    { id: string; original_filename: string; status: string; created_at: string }[]
-  >([]);
+type QueueItem = {
+  id: string;
+  original_filename: string;
+  status: string;
+};
 
-  async function load() {
-    try {
-      setError(null);
-      const data = await workbookAPI.getProcessingQueue();
-      setCount(data.count);
-      setItems(data.workbooks);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to load processing queue');
-    } finally {
-      setLoading(false);
-    }
-  }
+const ProcessingPage: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation() as any;
+  const [items, setItems] = useState<QueueItem[]>([]);
+  const [count, setCount] = useState(0);
+  const targetId = location?.state?.workbookId as string | undefined;
+  const seenCompleteRef = useRef(false);
 
-  React.useEffect(() => {
-    load();
-    const timer = setInterval(load, 4000); // poll
+  useEffect(() => {
+    let timer: any;
+
+    const tick = async () => {
+      const res = await api.get<{ count: number; workbooks: QueueItem[] }>(
+        "/workbooks/processing-queue/"
+      );
+      setCount(res.data.count);
+      setItems(res.data.workbooks);
+
+      // If we just started something, watch that id and divert to /reports when it's no longer in queue
+      if (targetId && !seenCompleteRef.current) {
+        const stillInQueue = res.data.workbooks.some((w) => w.id === targetId);
+        if (!stillInQueue) {
+          seenCompleteRef.current = true;
+          navigate("/reports", { state: { fromQueue: true, workbookId: targetId } });
+        }
+      }
+    };
+
+    tick();
+    timer = setInterval(tick, 2000);
     return () => clearInterval(timer);
-  }, []);
+  }, [navigate, targetId]);
 
   return (
-    <div className="container mx-auto max-w-5xl py-8">
-      <h1 className="text-2xl font-semibold mb-2">Processing Queue</h1>
-      <p className="text-sm text-gray-600 mb-6">Workbooks currently being processed</p>
-
-      <div className="inline-flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1 text-sm mb-6">
-        <span className="font-medium">{count} workbook(s) in queue</span>
+    <div className="p-6">
+      <h1 className="text-xl font-semibold mb-2">Processing Queue</h1>
+      <div className="mb-4 text-sm text-gray-600">
+        <span className="px-2 py-1 rounded bg-blue-50 border border-blue-200">
+          {count} workbook(s) in queue
+        </span>
       </div>
 
-      {loading ? (
-        <div>Loading…</div>
-      ) : error ? (
-        <div className="rounded-md bg-red-50 text-red-700 px-3 py-2">{error}</div>
-      ) : items.length === 0 ? (
+      {count === 0 ? (
         <div className="text-gray-500">No workbooks processing</div>
       ) : (
-        <div className="rounded-lg border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-left">
-                <th className="px-4 py-2">Workbook</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Created</th>
+        <div className="rounded border overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2 text-left">Workbook</th>
+                <th className="px-3 py-2 text-left">Status</th>
               </tr>
             </thead>
             <tbody>
-              {items.map(it => (
-                <tr key={it.id} className="border-t">
-                  <td className="px-4 py-2">{it.original_filename}</td>
-                  <td className="px-4 py-2 capitalize">{it.status}</td>
-                  <td className="px-4 py-2">{formatRelativeTime(it.created_at)}</td>
+              {items.map((w) => (
+                <tr key={w.id} className="border-t">
+                  <td className="px-3 py-2">{w.original_filename}</td>
+                  <td className="px-3 py-2">{w.status}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <div className="mt-6">
+        <button
+          onClick={() => navigate("/reports")}
+          className="px-4 py-2 rounded bg-gray-800 text-white hover:bg-black"
+        >
+          Go to Reports
+        </button>
+      </div>
     </div>
   );
-}
+};
+
+export default ProcessingPage;
